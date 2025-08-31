@@ -27,9 +27,7 @@ def render_gauge_svg(
     def to_angle(s):
         return -180 + 180 * (s + 2.0) / 4.0
 
-    start_ang = to_angle(prev_score)
     end_ang   = to_angle(score)
-
     arc_bg  = _arc_path(cx, cy, R, -180, 0)
     outline = _arc_path(cx, cy, R+2, -180, 0)
 
@@ -74,8 +72,8 @@ def render_gauge_svg(
         'style="background:{bg}; border-radius:12px">'.format(W=W, H=H, bg=dark_bg)
     )
 
-    # НЕ используем форматирование строк с % — внутри есть 0%/100%
-    gradient_and_style = (
+    # без форматирования с %, чтобы не ловить ошибки
+    parts.append(
         '<defs>'
         '  <linearGradient id="gaugeGradient" x1="0%" y1="0%" x2="100%" y2="0%">'
         '    <stop offset="0%"   stop-color="#FF8C00"/>'
@@ -85,13 +83,12 @@ def render_gauge_svg(
         '  </linearGradient>'
         '</defs>'
         '<style>'
-        '  .t {{ fill:#ffffff; font-family:-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }}'
-        '  .h1 {{ font-weight:700; font-size:' + str(fs_title)  + 'px; }}'
-        '  .h2 {{ font-weight:700; font-size:' + str(fs_status) + 'px; }}'
-        '  .tick {{ opacity:0.98; font-size:' + str(fs_tick)   + 'px; }}'
+        '  .t { fill:#ffffff; font-family:-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }'
+        '  .h1 { font-weight:700; font-size:' + str(fs_title)  + 'px; }'
+        '  .h2 { font-weight:700; font-size:' + str(fs_status) + 'px; }'
+        '  .tick { opacity:0.98; font-size:' + str(fs_tick)   + 'px; }'
         '</style>'
     )
-    parts.append(gradient_and_style)
 
     parts.append('<path d="{d}" stroke="url(#gaugeGradient)" stroke-width="{w}" '
                  'stroke-linecap="round" fill="none"/>'.format(d=arc_bg, w=max(2, int(W*0.036))))
