@@ -211,7 +211,7 @@ def generate_signal_core(ticker, asset_class, horizon, last_price, bars=None) ->
         conf = 0.6 if action in ('BUY','SHORT') else 0.54
         alt  = dict(if_condition='после подтверждения на уровне', action=action, entry=entry,
                     take_profit=[tp1 or entry, tp2 or entry], stop=stop or entry)
-        nar  = f"Пивоты(Fibo): P={piv['P']:.4f}, R2={piv['R2']:.4f}, R3={piv['R3']:.4f}, S2={piv['S2']:.4f}, S3={piv['S3']:.4f}."
+        nar  = "Сигнал неочевиден — ждём подтверждения от уровня и стабилизации импульса. Бережём капитал."
 
     return dict(
         action=action, entry=entry,
