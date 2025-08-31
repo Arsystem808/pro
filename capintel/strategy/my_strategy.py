@@ -228,7 +228,7 @@ def generate_signal_core(
     if horizon == "position":
         # ===== ДОЛГОСРОК (LT, годовые уровни) =====
         if overheat:
-            # базово WAIT; агрессивный SHORT — как опция
+            # базово WAIT; агрессивный SHORT — опция
             action = "WAIT"
             if nR3:
                 alt = dict(
@@ -236,7 +236,7 @@ def generate_signal_core(
                     action="SHORT",
                     entry=px,
                     take_profit=[piv["R2"], piv["P"]],
-                    stop=piv["R3"] * (1 + tol),
+                    stop=max(px, piv["R3"]) * (1 + tol),  # стоп ВЫШЕ входа
                 )
             else:
                 alt = dict(
@@ -244,7 +244,7 @@ def generate_signal_core(
                     action="SHORT",
                     entry=px,
                     take_profit=[(piv["P"] + piv["S1"]) / 2.0, piv["S1"]],
-                    stop=piv["R2"] * (1 + tol),
+                    stop=max(px, piv["R2"]) * (1 + tol),  # стоп ВЫШЕ входа
                 )
             conf = 0.54
             nar = (
@@ -256,10 +256,10 @@ def generate_signal_core(
             action = "BUY"
             if nS3:
                 entry = px
-                tp1, tp2, stop = piv["S2"], piv["P"], piv["S3"] * (1 - tol)
+                tp1, tp2, stop = piv["S2"], piv["P"], min(px, piv["S3"]) * (1 - tol)  # стоп НИЖЕ входа
             else:
                 entry = px
-                tp1, tp2, stop = (piv["P"] + piv["R1"]) / 2.0, piv["R1"], piv["S2"] * (1 - tol)
+                tp1, tp2, stop = (piv["P"] + piv["R1"]) / 2.0, piv["R1"], min(px, piv["S2"]) * (1 - tol)  # стоп НИЖЕ входа
             conf = 0.62
             nar = "LT: у годового «дна» допускаем аккуратные покупки с целями S2→P или P/R1→R1."
             alt = dict(
@@ -280,7 +280,7 @@ def generate_signal_core(
                     action="SHORT",
                     entry=px,
                     take_profit=[piv["P"], (piv["P"] + piv["S1"]) / 2.0],
-                    stop=piv["R2"] * (1 + tol),
+                    stop=max(px, piv["R2"]) * (1 + tol),  # стоп ВЫШЕ входа
                 )
             elif px <= piv["S1"]:
                 alt = dict(
@@ -288,7 +288,7 @@ def generate_signal_core(
                     action="BUY",
                     entry=px,
                     take_profit=[piv["P"], (piv["P"] + piv["R1"]) / 2.0],
-                    stop=piv["S2"] * (1 - tol),
+                    stop=min(px, piv["S2"]) * (1 - tol),  # стоп НИЖЕ входа
                 )
             else:
                 alt = dict(
@@ -312,18 +312,18 @@ def generate_signal_core(
             action = "SHORT"
             if nR3:
                 entry = px
-                tp1, tp2, stop = piv["R2"], piv["P"], thr_up_R3
+                tp1, tp2, stop = piv["R2"], piv["P"], max(px, thr_up_R3)  # стоп ВЫШЕ входа
                 # альтернатива — ИНВАЛИДАЦИЯ: пробой выше R3 → BUY по импульсу
                 alt = dict(
                     if_condition=f"если закрепится ВЫШЕ ~{thr_up_R3:.4f}",
                     action="BUY",
                     entry=px,
                     take_profit=[px + 0.6 * last_atr, px + 1.1 * last_atr],
-                    stop=piv["R3"],
+                    stop=piv["R3"],  # возврат ниже R3 — стоп
                 )
             else:
                 entry = px
-                tp1, tp2, stop = (piv["P"] + piv["S1"]) / 2.0, piv["S1"], thr_up_R2
+                tp1, tp2, stop = (piv["P"] + piv["S1"]) / 2.0, piv["S1"], max(px, thr_up_R2)  # стоп ВЫШЕ входа
                 # альтернатива — пробой выше R2 → BUY в сторону R3
                 alt = dict(
                     if_condition=f"если закрепится ВЫШЕ ~{thr_up_R2:.4f}",
@@ -344,7 +344,7 @@ def generate_signal_core(
             action = "BUY"
             if nS3:
                 entry = px
-                tp1, tp2, stop = piv["S2"], piv["P"], thr_dn_S3
+                tp1, tp2, stop = piv["S2"], piv["P"], min(px, thr_dn_S3)  # стоп НИЖЕ входа
                 # альтернатива — ИНВАЛИДАЦИЯ: пробой ниже S3 → SHORT по импульсу
                 alt = dict(
                     if_condition=f"если закрепится НИЖЕ ~{thr_dn_S3:.4f}",
@@ -355,7 +355,7 @@ def generate_signal_core(
                 )
             else:
                 entry = px
-                tp1, tp2, stop = (piv["P"] + piv["R1"]) / 2.0, piv["R1"], thr_dn_S2
+                tp1, tp2, stop = (piv["P"] + piv["R1"]) / 2.0, piv["R1"], min(px, thr_dn_S2)  # стоп НИЖЕ входа
                 # альтернатива — пробой ниже S2 → SHORT в сторону S3
                 alt = dict(
                     if_condition=f"если закрепится НИЖЕ ~{thr_dn_S2:.4f}",
@@ -375,17 +375,18 @@ def generate_signal_core(
             # нейтральная зона — WAIT; альтернативы от ближайшей кромки коридора
             action = "WAIT"
             conf = 0.54
-            # считаем «коридорные» цели на случай быстрого плана
+            # «коридорные» цели на случай быстрых сценариев (в UI скрыты при WAIT)
             tp1 = entry + 0.6 * last_atr
             tp2 = entry + 1.1 * last_atr
             stop = entry - 0.8 * last_atr
+
             if px >= piv["R1"]:
                 alt = dict(
                     if_condition="если отобьёмся от верхней кромки — подтверждённый шорт",
                     action="SHORT",
                     entry=px,
                     take_profit=[piv["P"], (piv["P"] + piv["S1"]) / 2.0],
-                    stop=piv["R2"] * (1 + tol),
+                    stop=max(px, piv["R2"]) * (1 + tol),  # стоп ВЫШЕ входа
                 )
             elif px <= piv["S1"]:
                 alt = dict(
@@ -393,7 +394,7 @@ def generate_signal_core(
                     action="BUY",
                     entry=px,
                     take_profit=[piv["P"], (piv["P"] + piv["R1"]) / 2.0],
-                    stop=piv["S2"] * (1 - tol),
+                    stop=min(px, piv["S2"]) * (1 - tol),  # стоп НИЖЕ входа
                 )
             else:
                 alt = dict(
@@ -418,3 +419,4 @@ def generate_signal_core(
         narrative_ru=nar,
         alt=alt,
     )
+
