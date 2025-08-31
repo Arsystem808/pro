@@ -190,28 +190,97 @@ def generate_signal_core(ticker, asset_class, horizon, last_price, bars=None) ->
         nar  = ("LT: ориентир на **годовые** пивоты. "
                 "У крыши при перегреве — базово *WAIT*; покупки — после перезагрузки в коридор P–S1/S2 "
                 "и признаков восстановления. Агрессивный шорт — только опция.")
-    else:
-        # intraday/swing — как было
+       else:
+        # ---------- INTRADAY / SWING ----------
+        # базовые уровни-инвалидации (через допуск tol)
+        thr_up_R3 = piv['R3'] * (1 + tol)
+        thr_up_R2 = piv['R2'] * (1 + tol)
+        thr_dn_S3 = piv['S3'] * (1 - tol)
+        thr_dn_S2 = piv['S2'] * (1 - tol)
+
         if overheat:
-            action='SHORT'
+            # базовый — шорт от "крыши"
+            action = 'SHORT'
             if nR3:
-                entry=px; tp1, tp2, stop = piv['R2'], piv['P'], piv['R3']*(1+tol)
-            else:
-                entry=px; tp1, tp2, stop = (piv['P']+piv['S1'])/2.0, piv['S1'], piv['R2']*(1+tol)
+                entry = px
+                tp1, tp2, stop = piv['R2'], piv['P'], thr_up_R3
+                # альтернатива — ИНВАЛИДАЦИЯ: пробой выше R3 -> BUY по импульсу
+                alt = dict(
+                    if_condition=f"если закрепится ВЫШЕ ~{thr_up_R3:.4f}",
+                    action='BUY',
+                    entry=px,
+                    take_profit=[px + 0.6*last_atr, px + 1.1*last_atr],
+                    stop=piv['R3']   # возврат ниже R3 — стоп
+                )
+            else:  # nR2
+                entry = px
+                tp1, tp2, stop = (piv['P']+piv['S1'])/2.0, piv['S1'], thr_up_R2
+                # альтернатива — пробой выше R2 -> BUY в сторону R3
+                alt = dict(
+                    if_condition=f"если закрепится ВЫШЕ ~{thr_up_R2:.4f}",
+                    action='BUY',
+                    entry=px,
+                    take_profit=[piv['R3'], piv['R3'] + 0.6*last_atr],
+                    stop=piv['R2']
+                )
+
         elif oversold:
-            action='BUY'
+            # базовый — лонг от "дна"
+            action = 'BUY'
             if nS3:
-                entry=px; tp1, tp2, stop = piv['S2'], piv['P'], piv['S3']*(1-tol)
-            else:
-                entry=px; tp1, tp2, stop = (piv['P']+piv['R1'])/2.0, piv['R1'], piv['S2']*(1-tol)
+                entry = px
+                tp1, tp2, stop = piv['S2'], piv['P'], thr_dn_S3
+                # альтернатива — ИНВАЛИДАЦИЯ: пробой ниже S3 -> SHORT по импульсу
+                alt = dict(
+                    if_condition=f"если закрепится НИЖЕ ~{thr_dn_S3:.4f}",
+                    action='SHORT',
+                    entry=px,
+                    take_profit=[px - 0.6*last_atr, px - 1.1*last_atr],
+                    stop=piv['S3']
+                )
+            else:  # nS2
+                entry = px
+                tp1, tp2, stop = (piv['P']+piv['R1'])/2.0, piv['R1'], thr_dn_S2
+                # альтернатива — пробой ниже S2 -> SHORT в сторону S3
+                alt = dict(
+                    if_condition=f"если закрепится НИЖЕ ~{thr_dn_S2:.4f}",
+                    action='SHORT',
+                    entry=px,
+                    take_profit=[piv['S3'], piv['S3'] - 0.6*last_atr],
+                    stop=piv['S2']
+                )
+
         else:
-            # ни перегрева ни дна — нейтральный сценарий с ATR-целями
+            # ни перегрева, ни дна — нейтрально; базовый WAIT с "коридорными" условиями
             action='WAIT'
             tp1 = entry + 0.6*last_atr; tp2 = entry + 1.1*last_atr; stop = entry - 0.8*last_atr
+            # альтернатива — два сценария в зависимости от положения к P
+            if px >= piv['R1']:
+                alt = dict(
+                    if_condition='если отобьёмся от верхней кромки — подтверждённый шорт',
+                    action='SHORT', entry=px,
+                    take_profit=[piv['P'], (piv['P']+piv['S1'])/2.0],
+                    stop=piv['R2']*(1+tol)
+                )
+            elif px <= piv['S1']:
+                alt = dict(
+                    if_condition='если удержим нижнюю кромку — подтверждённый лонг',
+                    action='BUY', entry=px,
+                    take_profit=[piv['P'], (piv['P']+piv['R1'])/2.0],
+                    stop=piv['S2']*(1-tol)
+                )
+            else:
+                alt = dict(
+                    if_condition='ждать перезагрузку в коридор P–S1/S2',
+                    action='WAIT', entry=px, take_profit=[px,px], stop=px
+                )
+
         conf = 0.6 if action in ('BUY','SHORT') else 0.54
-        alt  = dict(if_condition='после подтверждения на уровне', action=action, entry=entry,
-                    take_profit=[tp1 or entry, tp2 or entry], stop=stop or entry)
-        nar  = "Сигнал неочевиден — ждём подтверждения от уровня и стабилизации импульса. Бережём капитал."
+        nar  = (
+            f"Пивоты(Fibo): P={piv['P']:.4f}, R2={piv['R2']:.4f}, R3={piv['R3']:.4f}, "
+            f"S2={piv['S2']:.4f}, S3={piv['S3']:.4f}. "
+            "Работаем от краёв: база — контртренд, альтернатива — инвалидация через пробой уровня."
+        )
 
     return dict(
         action=action, entry=entry,
