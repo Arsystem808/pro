@@ -1,0 +1,1 @@
+streamlit==1.37.1\nnumpy==1.26.4\npandas==2.2.2\nhttpx==0.27.0\npython-dotenv==1.0.1\npydantic==1.10.15\nlightgbm==4.3.0\nscikit-learn==1.4.2\njoblib==1.4.2\n

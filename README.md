@@ -1,0 +1,1 @@
+# CapIntel — AI Signals (Meta‑Labeling)\nЗапуск: см. README из предыдущего сообщения.\n
