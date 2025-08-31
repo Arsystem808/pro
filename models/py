@@ -1,0 +1,8 @@
+This is the `models/` directory for CapIntel.
+
+Place your trained meta-classifier file here as `meta.pkl`.
+You can train it with:
+
+    python scripts/train_meta.py
+
+The app will fallback to rule-based strategy if `meta.pkl` is missing.
