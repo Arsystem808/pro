@@ -1,4 +1,0 @@
-[ok] AAPL: samples=41 (cum)
-[ok] BTCUSD: samples=51 (cum)
-acc=0.824  auc=0.937
-Saved: models/meta.pkl
