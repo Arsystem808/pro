@@ -1,249 +1,134 @@
 # -*- coding: utf-8 -*-
-# CapIntel — AI Signals (Crypto & Equities)
-
-# --- bootstrap PYTHONPATH so "capintel" is importable ---
-import os, sys
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-
-import json
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
 
 import streamlit as st
+from typing import Any, Dict, List, Optional
 
-# Пакет приложения
-try:
-    from capintel.signal_engine import build_signal
-except Exception as e:
-    st.error(
-        "Не удаётся импортировать `capintel.signal_engine`. "
-        "Проверь структуру репозитория: рядом с папкой `app/` должна быть папка "
-        "`capintel/` с файлами `__init__.py` и `signal_engine.py`.\n\n"
-        f"Подробности: {e}"
-    )
-    st.stop()
+from capintel.signal_engine import build_signal
+from capintel.narrator import trader_tone_narrative_ru
+from capintel.visuals_svg import render_gauge_svg  # твой полукруглый индикатор
 
-# Визуализация (может отсутствовать — обработаем мягко)
-_render_svg = None
-try:
-    from capintel.visuals_svg import render_gauge_svg as _render_svg  # type: ignore
-except Exception:
-    _render_svg = None
+st.set_page_config(page_title="CapIntel — AI Signals", layout="wide")
 
-# Наратив (опционально)
-_narr = None
-try:
-    from capintel.narrator import trader_tone_narrative_ru as _narr  # type: ignore
-except Exception:
-    _narr = None
+# ---------- Sidebar ----------
+st.sidebar.header("Параметры")
+asset_class = st.sidebar.selectbox("Класс актива", ["equity", "crypto"])
+horizon = st.sidebar.selectbox("Горизонт", ["intraday", "swing", "position"])
+ticker = st.sidebar.text_input("Тикер", "QQQ")
+price_raw = st.sidebar.text_input("Текущая цена (необязательно)", "")
+show_gauge = st.sidebar.toggle("Показывать индикатор", value=True)
+dev = st.sidebar.toggle("Режим разработчика", value=False)
+run = st.sidebar.button("Сгенерировать идею")
 
-
-# ---------------- UI helpers ----------------
-def pill(value: Any) -> str:
-    return f"<span style='background:#1f7a1f22;border:1px solid #39d37a44;" \
-           f"padding:2px 8px;border-radius:8px;font-weight:600'>{value}</span>"
-
-
-def pct_to_str(p: Optional[float]) -> str:
-    if p is None:
-        return "—"
-    # Принимаем как 0..1 или 0..100 — нормализуем
-    v = p if p > 1.001 else p * 100.0
-    return f"{v:.0f}%"
-
-
-def compute_score(sig: Dict[str, Any]) -> float:
-    """
-    Универсальная оценка [-2..+2] для шкалы.
-    1) Если стратегия вернула 'score' — используем.
-    2) Иначе — эвристика по действию и уверенности.
-    """
-    if isinstance(sig.get("score"), (int, float)):
-        s = float(sig["score"])
-        # безопасно обрежем
-        return max(-2.0, min(2.0, s))
-
-    action = (sig.get("action") or "").upper()
-    conf = sig.get("confidence")
-    if conf is None:
-        conf = 0.5
-    conf = conf if conf > 1.001 else conf * 100.0  # в %
-    base = 0.0
-    if action in ("LONG", "BUY"):
-        base = 1.0
-    elif action in ("SHORT", "SELL"):
-        base = -1.0
-    else:  # WAIT / CLOSE / прочее
-        base = 0.0
-    # усилим по уверенности: >70% ближе к 2, <40% ближе к 0
-    k = 0.5 + max(0.0, (conf - 40.0)) / 60.0  # 0.5..1.5
-    score = base * k
-    return max(-2.0, min(2.0, score))
-
-
-def show_gauge(sig: Dict[str, Any]) -> None:
-    score = compute_score(sig)
-    if _render_svg is None:
-        st.caption("Индикатор недоступен: модуль визуализации не найден.")
-        return
-    # Пытаемся вызвать с разными сигнатурами, чтобы не падать,
-    # т.к. у тебя могла быть другая версия visuals_svg.
-    svg = None
-    try:
-        svg = _render_svg(score)  # самый простой вызов
-    except TypeError:
-        try:
-            svg = _render_svg(score, title="Общая оценка")  # вариант с заголовком
-        except Exception:
-            svg = None
-    if svg:
-        st.markdown(
-            f"<div style='display:flex;justify-content:center;'>{svg}</div>",
-            unsafe_allow_html=True,
-        )
-
-
-# ---------------- Page config ----------------
-st.set_page_config(
-    page_title="CapIntel — AI Signals",
-    layout="wide",
-)
-
-st.markdown("## 🤖 CapIntel — AI Signals (Crypto & Equities)")
+st.title("🤖 CapIntel — AI Signals (Crypto & Equities)")
 st.caption("Meta-labeling поверх правил. ML включится, если найден `models/meta.pkl`.")
 
-# ---------------- Sidebar ----------------
-with st.sidebar:
-    st.header("Параметры")
-    asset_class = st.selectbox("Класс актива", ["equity", "crypto"], index=0)
-    horizon = st.selectbox("Горизонт", ["intraday", "swing", "position"], index=1)
-    ticker = st.text_input("Тикер", value="AAPL" if asset_class == "equity" else "BTCUSD")
-    price_in = st.text_input("Текущая цена (необязательно)", value="").strip()
-    show_g = st.toggle("Показывать индикатор", value=True)
-    dev = st.toggle("Режим разработчика", value=False)
-    submitted = st.button("Сгенерировать сигнал", type="primary")
+# ---------- Helpers ----------
+def fmt(x: Optional[float]) -> str:
+    return "—" if x is None else f"{float(x):.2f}"
 
-# ---------------- Main logic ----------------
-if submitted:
-    if not ticker:
-        st.warning("Введите тикер.")
-        st.stop()
+def render_targets(tps: List[float]) -> str:
+    if not tps:
+        return "—"
+    out = []
+    for i, v in enumerate(tps, start=1):
+        out.append(f"TP{i} {float(v):.2f}")
+    return " • ".join(out)
 
-    # Парсим цену
-    price_val: Optional[float] = None
-    if price_in:
-        try:
-            price_val = float(price_in.replace(",", "."))
-        except Exception:
-            st.warning("Не удалось разобрать поле 'Текущая цена'. Будет использована рыночная цена провайдера.")
-            price_val = None
-
-    # Генерируем сигнал
+# ---------- Main ----------
+if run:
     try:
-        sig: Dict[str, Any] = build_signal(
-            ticker=ticker.strip().upper(),
-            asset_class=asset_class.strip().lower(),
-            horizon=horizon.strip().lower(),
-            price=price_val,
-        )
-    except ValueError as ve:
-        st.error(f"Ошибка при генерации сигнала: {ve}")
-        st.stop()
-    except Exception as e:
-        st.exception(e)
-        st.stop()
+        price_val = float(price_raw.replace(",", ".")) if price_raw.strip() else None
+    except Exception:
+        price_val = None
 
-    # Заголовок инструмента
-    st.markdown(
-        f"### {ticker.strip().upper()} • {asset_class.upper()} • {horizon.lower()}",
-    )
+    spec: Dict[str, Any] = build_signal(ticker.upper().strip(), asset_class, horizon, price_val)
 
-    # --- Линия ключевых полей ---
-    cols = st.columns(3)
-    def _fmt_num(x: Any) -> str:
-        try:
-            return f"{float(x):.2f}"
-        except Exception:
-            return "—"
+    # Заголовок блока
+    st.subheader(f"{ticker.upper()} • {asset_class.upper()} • {horizon}")
 
-    entry = sig.get("entry")
-    stop = sig.get("stop")
-    tps: List[float] = []
-    if isinstance(sig.get("take_profit"), (list, tuple)):
-        tps = [float(x) for x in sig["take_profit"] if x is not None]
+    # Решение
+    st.markdown(f"### ➤ Решение: **{spec.get('action', 'WAIT')}**")
 
-    with cols[0]:
-        st.markdown(f"**Действие:** {sig.get('action','—')}")
-        st.markdown(f"**Вход:** {_fmt_num(entry)}")
-    with cols[1]:
-        if tps:
-            tp_txt = " • ".join([f"TP{i+1} {_fmt_num(tp)}" for i, tp in enumerate(tps[:2])])
-        else:
-            tp_txt = "—"
-        st.markdown(f"**Цели:** {tp_txt}")
-    with cols[2]:
-        st.markdown(f"**Стоп:** {_fmt_num(stop)}")
+    # Верхняя строка метрик
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f"**Вход:** {fmt(spec.get('entry'))}")
+    with c2:
+        st.markdown(f"**Цели:** {render_targets(spec.get('take_profit', []))}")
+    with c3:
+        st.markdown(f"**Стоп:** {fmt(spec.get('stop'))}")
+    with c4:
+        conf = spec.get("confidence", 0.0)
+        st.markdown(f"**Уверенность:** {round(100*float(conf))}%")
 
-    # --- Уверенность/размер ---
-    cols2 = st.columns(2)
-    with cols2[0]:
-        st.markdown(f"**Уверенность:** {pct_to_str(sig.get('confidence'))}")
-    with cols2[1]:
-        sz = sig.get("position_size_pct_nav")
-        st.markdown(f"**Размер позиции:** {pct_to_str(sz)} NAV")
+    # вторая строка
+    c5, c6 = st.columns(2)
+    with c5:
+        psz = spec.get("position_size_pct_nav", 0.0)
+        st.markdown(f"**Размер позиции:** {round(100*float(psz),2)}% NAV")
+    with c6:
+        st.markdown("&nbsp;")
 
-    # --- Шкала ---
-    if show_g:
-        show_gauge(sig)
+    # Индикатор (оценка)
+    if show_gauge:
+        score = float(spec.get("rating", 0.0) or 0.0)  # ожидание [-2..+2], если нет — 0
+        svg = render_gauge_svg(score=score, title="Общая оценка")
+        st.markdown(svg, unsafe_allow_html=True)
 
-    # --- Наратив/заметка о ML ---
-    ml_note = sig.get("ml_note")
-    if not ml_note:
-        # если модель нашлась — покажем ON, иначе OFF
-        ml_note = "[ML ON] Модель найдена." if sig.get("p_succ") is not None else "[ML OFF] Модель не найдена — используется rule-based логика."
-    st.info(ml_note)
+    # Блок ML
+    ml = spec.get("ml", {})
+    ml_note = spec.get("ml_note", "")
+    if ml.get("on"):
+        p = ml.get("p_succ")
+        txt = "[ML ON]"
+        if p is not None:
+            try:
+                txt += f" p_succ≈{round(100*float(p)):.0f}%."
+            except Exception:
+                pass
+        if ml_note:
+            txt += " " + str(ml_note)
+        st.info(txt)
+    else:
+        st.info(ml_note or "[ML OFF]")
 
-    # Если стратегия не проставила narrative_ru — попробуем сгенерировать тонко
-    nar = sig.get("narrative_ru")
-    if not nar and _narr:
-        try:
-            nar = _narr(sig)
-        except Exception:
-            nar = None
-    if nar:
-        st.info(nar)
+    # Наратив «по-человечески»
+    narrative = spec.get("narrative_ru") or trader_tone_narrative_ru(spec, horizon)
+    # исключаем слово «сигнал»
+    narrative = narrative.replace("сигнал", "идея").replace("Сигнал", "Идея")
+    st.info(narrative)
 
-    # --- Альтернативный план ---
-    alts = sig.get("alternatives") or []
-    if isinstance(alts, list) and alts:
-        st.subheader("Альтернативный план")
-        for a in alts:
-            a_act = (a.get("action") or "—").upper()
-            a_entry = _fmt_num(a.get("entry"))
-            a_tps = a.get("take_profit") or []
-            a_stop = _fmt_num(a.get("stop"))
-            a_tp_txt = " • ".join([f"TP{i+1} {_fmt_num(tp)}" for i, tp in enumerate(a_tps[:2])]) if a_tps else "—"
-            cond = a.get("if_condition")
-            bullet = f"**{a_act}** от {pill(a_entry)} → {pill(a_tp_txt)}, стоп {pill(a_stop)}"
-            if cond:
-                bullet = f"{cond}: " + bullet
-            st.markdown("• " + bullet, unsafe_allow_html=True)
+    # Альтернативный план (если реально отличается)
+    alts = spec.get("alternatives", []) or []
+    def _differs(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        keys = ["action", "entry", "take_profit", "stop"]
+        return any(str(a.get(k)) != str(b.get(k)) for k in keys)
+    base_cmp = {k: spec.get(k) for k in ["action","entry","take_profit","stop"]}
 
-    # --- Служебные поля (для дебага/аудита) ---
-    meta_cols = st.columns(3)
-    with meta_cols[0]:
-        st.caption(f"Создан: {sig.get('created_at','—')}")
-    with meta_cols[1]:
-        st.caption(f"Истекает: {sig.get('expires_at','—')}")
-    with meta_cols[2]:
-        st.caption(f"ID: {sig.get('id','—')}")
+    shown = []
+    for alt in alts:
+        if not isinstance(alt, dict):
+            continue
+        cmp = {k: alt.get(k) for k in ["action","entry","take_profit","stop"]}
+        if not _differs(cmp, base_cmp):
+            continue
+        shown.append(alt)
 
-    st.caption("Не инвестиционный совет. Торговля сопряжена с риском.")
+    if shown:
+        st.markdown("### Альтернативный план")
+        for alt in shown:
+            cond = alt.get("if_condition") or "условие"
+            act = alt.get("action","")
+            entry = fmt(alt.get("entry"))
+            tps = render_targets(alt.get("take_profit", []))
+            stop = fmt(alt.get("stop"))
+            st.markdown(f"- **если {cond}** → **{act}** от **{entry}** → {tps}, **стоп** {stop}")
 
-    with st.expander("JSON"):
-        st.code(json.dumps(sig, ensure_ascii=False, indent=2))
+    # Dev
+    if dev:
+        with st.expander("JSON"):
+            st.code(spec, language="json")
 
 else:
-    st.info("Выбери параметры слева и нажми **Сгенерировать сигнал**.")
+    st.caption("Заполни параметры слева и нажми «Сгенерировать идею».")
