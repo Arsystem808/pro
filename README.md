@@ -1,1 +1,1 @@
-# CapIntel — AI Trading (Meta‑Labeling)\nЗапуск: см. README из предыдущего сообщения.\n
+# CapIntel — AI Signal (Meta‑Labeling)\nЗапуск: см. README из предыдущего сообщения.\n
