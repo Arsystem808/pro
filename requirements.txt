@@ -16,3 +16,4 @@ scikit-learn>=1.5,<2.0
 
 # Schemas (мы используем Pydantic v1)
 pydantic>=1.10.13,<2.0
+matplotlib>=3.8,<4.0
