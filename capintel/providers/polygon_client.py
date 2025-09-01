@@ -1,133 +1,77 @@
-# -*- coding: utf-8 -*-
-"""
-Простой и надёжный клиент Polygon.io под CapIntel.
-Даёт:
-    - daily_bars(asset_class, ticker, n)
-    - intraday_bars(asset_class, ticker, minutes)
-    - latest_price(asset_class, ticker)
-Возвращает pandas.DataFrame с колонками O/H/L/C и DatetimeIndex (UTC).
-"""
-
 from __future__ import annotations
-
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, List, Tuple, Optional
-
-import httpx
+import time
+import math
 import pandas as pd
+import requests
+from datetime import datetime, timedelta, timezone
 
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY","")
 
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "").strip()
-BASE = "https://api.polygon.io"
+_BASE = "https://api.polygon.io"
 
-
-# ---------------------------- helpers ---------------------------- #
-
-def _require_key():
+def _get(url: str, params: dict) -> dict:
     if not POLYGON_API_KEY:
-        raise RuntimeError("POLYGON_API_KEY не задан — добавь секрет в Streamlit (Secrets).")
+        raise ValueError("Не задан POLYGON_API_KEY")
+    params = {**params, "apiKey": POLYGON_API_KEY}
+    r = requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
+def _df_from_aggs(rows: list) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=["o","h","l","c","t"])
+    df = pd.DataFrame(rows)
+    # polygon поля: o,h,l,c,v,t (t — epoch ms)
+    if "t" in df.columns:
+        idx = pd.to_datetime(df["t"], unit="ms", utc=True)
+        df = df.assign(t=idx).set_index("t").sort_index()
+    df = df.rename(columns={"o":"o","h":"h","l":"l","c":"c"})
+    return df[["o","h","l","c"]].astype(float)
 
-def _poly_ticker(asset_class: str, ticker: str) -> str:
-    """Нормализуем тикер для аггрегатов Polygon."""
-    asset_class = (asset_class or "").lower().strip()
-    t = ticker.upper().strip()
-    if asset_class == "crypto":
-        # Polygon ждёт формат X:BTCUSD (по умолчанию к USD)
-        if not t.startswith("X:"):
-            if not t.endswith("USD"):
-                t = f"{t}USD"
-            t = f"X:{t}"
-    # equities как есть, например AAPL
-    return t
-
-
-def _aggs(ticker: str, mult: int, timespan: str, date_from: str, date_to: str) -> List[Dict[str, Any]]:
-    """Обёртка над /v2/aggs/ticker/... возвращает список баров (raw)."""
-    _require_key()
-    url = f"{BASE}/v2/aggs/ticker/{ticker}/range/{mult}/{timespan}/{date_from}/{date_to}"
-    params = {
-        "adjusted": "true",
-        "sort": "asc",
-        "limit": 50000,
-        "apiKey": POLYGON_API_KEY,
-    }
-    with httpx.Client(timeout=20) as r:
-        resp = r.get(url, params=params)
-        resp.raise_for_status()
-        j = resp.json()
-    return j.get("results", []) or []
-
-
-def _to_df(results: List[Dict[str, Any]]) -> pd.DataFrame:
-    """Превращаем аггрегаты Polygon в DataFrame O/H/L/C с DatetimeIndex (UTC)."""
-    if not results:
-        return pd.DataFrame(columns=["O", "H", "L", "C"])
-    rows = []
-    for r in results:
-        ts = pd.to_datetime(r.get("t"), unit="ms", utc=True)
-        rows.append({
-            "t": ts,
-            "O": float(r.get("o", float("nan"))),
-            "H": float(r.get("h", float("nan"))),
-            "L": float(r.get("l", float("nan"))),
-            "C": float(r.get("c", float("nan"))),
-        })
-    df = pd.DataFrame(rows).set_index("t").sort_index()
-    return df.dropna(how="any")
-
-
-# ---------------------------- public API ---------------------------- #
-
-def daily_bars(asset_class: str, ticker: str, n: int = 520) -> pd.DataFrame:
-    """
-    Дневные бары (до ~2 лет).
-    """
-    tt = _poly_ticker(asset_class, ticker)
-    now = datetime.now(timezone.utc).date()
-    date_to = now.strftime("%Y-%m-%d")
-    date_from = (now - timedelta(days=max(5, int(n) + 10))).strftime("%Y-%m-%d")
-    res = _aggs(tt, 1, "day", date_from, date_to)
-    df = _to_df(res)
-    # берём только хвост нужной длины
-    if not df.empty and n:
-        df = df.tail(int(n))
+def daily_bars(asset_class: str, ticker: str, lookback: int = 520) -> pd.DataFrame:
+    """Последние ~lookback дневных баров (equity/crypto)."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=int(lookback*1.8))  # с запасом
+    url = f"{_BASE}/v2/aggs/ticker/{ticker.upper()}/range/1/day/{int(start.timestamp()*1000)}/{int(end.timestamp()*1000)}"
+    js = _get(url, {"adjusted": "true", "sort":"asc", "limit": 50000})
+    df = _df_from_aggs(js.get("results", []))
     return df
 
+def intraday_bars(asset_class: str, ticker: str, minutes: int = 390, mult: int = 5) -> pd.DataFrame:
+    """Минутки/5-минутки последней ТОРГОВОЙ сессии."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=7)  # берём неделю и выделим последнюю сессию
+    url = f"{_BASE}/v2/aggs/ticker/{ticker.upper()}/range/{mult}/minute/{int(start.timestamp()*1000)}/{int(end.timestamp()*1000)}"
+    js = _get(url, {"adjusted": "true", "sort":"asc", "limit": 50000})
+    df = _df_from_aggs(js.get("results", []))
+    if df.empty:
+        return df
 
-def intraday_bars(asset_class: str, ticker: str, minutes: int = 390) -> pd.DataFrame:
-    """
-    Минутные бары. Берём за последние 2 календарных дня, чтобы уложиться в лимиты.
-    """
-    tt = _poly_ticker(asset_class, ticker)
-    now = datetime.now(timezone.utc)
-    date_to = now.strftime("%Y-%m-%d")
-    date_from = (now - timedelta(days=2)).strftime("%Y-%m-%d")
-    # минутные аггрегаты (1 минута)
-    res = _aggs(tt, 1, "minute", date_from, date_to)
-    df = _to_df(res)
-    if not df.empty and minutes:
-        df = df.tail(int(minutes))
-    return df
-
-
-def latest_price(asset_class: str, ticker: str) -> Optional[float]:
-    """
-    Текущая/последняя цена. Берём последнюю из минуток; если пусто — из дневных баров.
-    """
+    # определим последнюю «дату» в часовом поясе Нью-Йорка (для акций)
+    tz = "America/New_York"
     try:
-        dfi = intraday_bars(asset_class, ticker, minutes=60)
-        if not dfi.empty:
-            return float(dfi["C"].iloc[-1])
+        di = df.tz_convert(tz)
+    except Exception:
+        di = df.tz_localize("UTC").tz_convert(tz)
+
+    last_date = di.index.date.max()
+    session = di[di.index.date == last_date]
+    if session.empty and asset_class.lower()=="equity":
+        # запасной путь: просто берём последние minutes баров
+        return df.tail(max(1, minutes//mult))
+    return session.tail(max(1, minutes//mult))
+
+def last_trade_price(asset_class: str, ticker: str) -> float | None:
+    # сперва попробуем интрадей
+    try:
+        idf = intraday_bars(asset_class, ticker, minutes=60)
+        if not idf.empty:
+            return float(idf["c"].iloc[-1])
     except Exception:
         pass
-    try:
-        dfd = daily_bars(asset_class, ticker, n=5)
-        if not dfd.empty:
-            return float(dfd["C"].iloc[-1])
-    except Exception:
-        pass
-    return None
-
- 
+    # иначе из дневных
+    ddf = daily_bars(asset_class, ticker, lookback=10)
+    if ddf.empty:
+        return None
+    return float(ddf["c"].iloc[-1])
