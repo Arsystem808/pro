@@ -1,6 +1,8 @@
 .venv/
-.env
+env/
 __pycache__/
 *.pyc
 .DS_Store
 train.log
+models/*.pkl
+!models/meta.pkl
