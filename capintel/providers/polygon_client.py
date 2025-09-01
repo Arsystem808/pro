@@ -1,6 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
-
 import os
 import datetime as dt
 from typing import Dict, Any, Tuple
@@ -197,7 +195,6 @@ def _std_ohlc(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Provider returned bars without DatetimeIndex")
     return df.sort_index()
 # -*- coding: utf-8 -*-
-from __future__ import annotations
 import os, math, datetime as dt
 from typing import Literal
 import httpx
