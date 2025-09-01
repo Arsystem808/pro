@@ -1,2 +1,1 @@
-from .signal_engine import build_signal
-__all__ = ["build_signal"]
+from .narrator import trader_tone_narrative_ru  # noqa:F401
