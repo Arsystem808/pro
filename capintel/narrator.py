@@ -1,25 +1,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from typing import Dict, Any
+from typing import Tuple, Dict, Any
+import pandas as pd
 
-def trader_tone_narrative_ru(spec: Dict[str, Any], horizon: str) -> str:
-    act = str(spec.get("action", "WAIT")).upper()
-    hru = {"intraday": "INTRADAY", "swing": "SWING", "position": "LT"}.get(horizon, horizon).upper()
+def trader_tone_narrative_ru(sig: Dict[str, Any], bars: pd.DataFrame) -> Tuple[str,str]:
+    act = sig.get("action","WAIT")
+    base = sig.get("short_text") or ""
+    alt  = sig.get("alt_text") or ""
 
     if act == "WAIT":
-        base = f"{hru}: идея пока неочевидна — ждём реакции на уровень и стабилизации импульса."
-    elif act == "BUY":
-        base = f"{hru}: покупка уместна — есть подтверждение по уровням/импульсу."
-    elif act == "SHORT":
-        base = f"{hru}: шорт уместен — есть признаки перегрева/ослабления."
+        base = "Идея не сформирована. Ждём касание/реакцию на уровень и стабилизацию импульса."
+        alt  = ""
     else:
-        base = f"{hru}: решение {act}."
+        side = "лонг" if act=="LONG" else "шорт"
+        base = f"Базовый {side}: от уровня, цели по ближайшим пивотам. Следим за импульсом и объёмом."
+        if not alt:
+            alt = f"Если реакция от кромки коридора — подтверждённый {side} по рынку малым объёмом."
 
-    # Лёгкая пометка по ML
-    ml = spec.get("ml", {})
-    if ml.get("on") and "p_succ" in ml:
-        base += f" ML оценивает шанс успеха ≈ {round(100*float(ml['p_succ'])):.0f}%."
-    elif not ml.get("on"):
-        base += " (ML выключен)"
-
-    return base
+    return base, alt
