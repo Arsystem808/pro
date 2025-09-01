@@ -1,70 +1,112 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
-from pathlib import Path
-import numpy as np
+
+import os
+from typing import Any, Dict, List, Optional
+
 import pandas as pd
-import joblib
 
-from capintel.providers.polygon_client import daily_bars, intraday_bars, last_trade_price
-from capintel.strategy.my_strategy import generate_signal_core as RB  # rule-based
-from capintel.strategy.my_strategy_ml import prob_success            # meta (если есть)
-from capintel.narrator import trader_tone_narrative_ru
+# --- Поставщики данных ---
+try:
+    from capintel.providers.polygon_client import daily_bars, intraday_bars
+except Exception as e:
+    raise ImportError(f"Не удалось импортировать провайдера данных: {e}")
 
-MODEL_PATH = Path("models/meta.pkl")
+# --- Стратегии ---
+from capintel.strategy.my_strategy import generate_signal_core as rb_generate
 
-def _std_ohlc(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
+# ML-часть опциональна
+try:
+    from capintel.strategy.my_strategy_ml import generate_signal_core as ml_generate
+except Exception:
+    ml_generate = None  # ML недоступен — работаем по правилам
+
+
+# ---------- Вспомогательные ----------
+def _standardize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    """Приводим имена/типы колонок к ['o','h','l','c'] и проверяем непустоту."""
+    if df is None or len(df) == 0:
         raise ValueError("Пустые бары: провайдер вернул пустой DataFrame")
-    # гарантируем нужные колонки
-    need = ["o","h","l","c"]
-    for col in need:
-        if col not in df.columns:
-            raise KeyError(f"Нет колонки {col} в данных провайдера")
-    if not isinstance(df.index, pd.DatetimeIndex):
-        df = df.copy()
-        df.index = pd.to_datetime(df.index, utc=True)
-    return df[need].astype(float)
+
+    rename_map = {
+        "open": "o", "high": "h", "low": "l", "close": "c",
+        "Open": "o", "High": "h", "Low": "l", "Close": "c",
+        "O": "o", "H": "h", "L": "l", "C": "c",
+    }
+    out = df.rename(columns=rename_map).copy()
+
+    need = ["o", "h", "l", "c"]
+    if not set(need).issubset(out.columns):
+        raise ValueError(f"Отсутствуют OHLC-колонки. Есть: {list(out.columns)}")
+
+    for k in need:
+        out[k] = pd.to_numeric(out[k], errors="coerce")
+    out = out.dropna(subset=need)
+    if out.empty:
+        raise ValueError("После приведения типов бары стали пустыми.")
+    return out
+
 
 def _fetch_bars(asset_class: str, ticker: str, horizon: str) -> pd.DataFrame:
+    asset_class = asset_class.lower().strip()
+    horizon = horizon.lower().strip()
     if horizon == "intraday":
-        df = intraday_bars(asset_class, ticker, minutes=390, mult=5)
+        df = intraday_bars(asset_class, ticker)
     else:
-        # на свинг/позицию для индикаторов всегда нужны дневки
-        df = daily_bars(asset_class, ticker, lookback=520)
-    return _std_ohlc(df)
+        df = daily_bars(asset_class, ticker)
+    return df
 
-def _load_model():
-    if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 5_000:  # 1 КБ — точно заглушка
-        try:
-            return joblib.load(MODEL_PATH)
-        except Exception:
-            return None
-    return None
 
-def build_signal(ticker: str, asset_class: str, horizon: str, price: float | None = None) -> dict:
-    bars = _fetch_bars(asset_class, ticker, horizon)
+def _merge_specs(base: Dict[str, Any], update: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Аккуратно накладываем ML-результат поверх rule-based (если есть)."""
+    if not isinstance(update, dict):
+        return base
+    merged = {**base, **update}  # ML поля перекрывают базовые
+    return merged
+
+
+# ---------- Публичное API ----------
+def build_signal(
+    ticker: str,
+    asset_class: str,
+    horizon: str,
+    price: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Главная точка входа. Возвращает словарь с полями:
+    action, entry, take_profit (list), stop, confidence, position_size_pct_nav, ...
+    """
+    bars_raw = _fetch_bars(asset_class, ticker, horizon)
+    bars = _standardize_ohlc(bars_raw)
+
+    # Последняя цена
     last_px = float(price) if price is not None else float(bars["c"].iloc[-1])
 
-    # базовый (rule-based) сигнал по твоей стратегии
-    spec = RB(ticker, asset_class, horizon, last_px, bars)
+    # 1) Базовый rule-based сигнал
+    spec_rb = rb_generate(ticker, asset_class, horizon, last_px, bars)
+    spec = dict(spec_rb) if isinstance(spec_rb, dict) else {}
 
-    # meta-labeling (если модель реально есть)
-    model = _load_model()
-    if model is not None:
-        p_succ = prob_success(model, last_px, bars)
-        spec["ml"] = {"on": True, "p_succ": float(p_succ)}
-        # подстраиваем уверенность/размер
-        spec["confidence"] = max(0.05, min(0.95, 0.5 + (p_succ - 0.5)*0.9))
-        base = spec.get("position_size_pct_nav", 0.8)
-        k = 0.5 + p_succ  # 0.5..1.5
-        spec["position_size_pct_nav"] = round(base * k, 2)
-    else:
-        spec["ml"] = {"on": False}
-        spec.setdefault("confidence", 0.54)
+    # 2) Если ML доступен — попробуем усилить/заменить
+    if ml_generate is not None:
+        try:
+            spec_ml = ml_generate(ticker, asset_class, horizon, last_px, bars)
+            spec = _merge_specs(spec, spec_ml)
+        except Exception as e:
+            # ML упал — оставляем rule-based и добавляем заметку
+            note = spec.get("ml_note") or ""
+            note += f" [ML OFF] Ошибка ML: {e}"
+            spec["ml_note"] = note.strip()
 
-    # человеко-подобный комментарий
-    spec["narrative_ru"] = trader_tone_narrative_ru(spec, bars)
+    # Страхуем минимальный набор полей
+    spec.setdefault("action", "WAIT")
+    spec.setdefault("entry", last_px)
+    spec.setdefault("take_profit", [])
+    spec.setdefault("stop", last_px)
+    spec.setdefault("confidence", 0.5)
+    spec.setdefault("position_size_pct_nav", 0.0)
 
-    # тех. примечание
-    spec["tech_note_ru"] = "[ML ON]" if spec["ml"]["on"] else "[ML OFF] Модель не найдена — используется rule-based логика."
+    # Служебная пометка о статусе ML, если её ещё нет
+    if "ml_note" not in spec:
+        spec["ml_note"] = "[ML ON]" if ml_generate is not None else "[ML OFF] Модель не найдена — используется rule-based логика."
 
     return spec
